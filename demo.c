@@ -4,72 +4,35 @@
 #define AUDIO_SOURCE "1.mp3"
 #define PICTURE_SOURCE "1.jpg"
 
-#define DUMP_IN 1
+//#define DUMP_IN 1
 
-int main() {
+AVCodec         *mCodec = NULL;            //编解码器
+AVFormatContext *mFormatContext = NULL;    //贯穿ffmpeg的上下文
+AVIOContext     *mIOContext = NULL;        //输入设备上下文，ffmpeg将文件也视为一种协议
+AVFrame         *mFrame = NULL;            //解码后的原始帧数据
+AVFrame         *mFrameYUV = NULL;         //原始帧数据转化后的YUV数据
+AVPacket        mPacket;                   //解码前的帧数据
+AVInputFormat   *mInputFormat = NULL;      //输入格式的上下文
+AVCodecContext  *mCodecContext = NULL;     //编解码器的上下文
 
-    AVCodec         *mCodec = NULL;            //编解码器
-    AVFormatContext *mFormatContext = NULL;    //贯穿ffmpeg的上下文
-    AVIOContext     *mIOContext = NULL;        //输入设备上下文，ffmpeg将文件也视为一种协议
-    AVFrame         *mFrame = NULL;            //解码后的原始帧数据
-    AVFrame         *mFrameYUV = NULL;         //原始帧数据转化后的YUV数据
-    AVPacket        mPacket;                   //解码前的帧数据
-    AVInputFormat   *mInputFormat = NULL;      //输入格式的上下文
-    AVCodecContext  *mCodecContext = NULL;     //编解码器的上下文
-
-    struct SwsContext *img_convert_ctx = NULL; //图像处理的上下文
+struct SwsContext *img_convert_ctx = NULL; //图像处理的上下文
 
 #ifdef DUMP_IN
-    FILE            *mYuvFd;                   //输出文件
+FILE            *mYuvFd;                   //输出文件
 #endif
-    unsigned char   *mBuffer = NULL;           //应该是用于存储像素点
 
-    //不公开的结构体
-    //AVIStream       *mIStream;               该字段为AVStream中的priv_data数据
-    //URLContext      *mURLContext;            IOContext中使用的内部数据结构
+unsigned char   *mBuffer = NULL;           //应该是用于存储像素点
 
+//不公开的结构体
+//AVIStream       *mIStream;               该字段为AVStream中的priv_data数据
+//URLContext      *mURLContext;            IOContext中使用的内部数据结构
+
+void decoder_video() {
     int ret = 0;
     int i = 0;
     int got_frame = 0;
     int y_size = 0;
     int video_index = -1;
-
-    //注册各种编解码器等
-    av_register_all();
-
-    //为avformat分配空间和部分参数初始化
-    mFormatContext = avformat_alloc_context();
-    if (mFormatContext == NULL) {
-        printf("init AVFormatContext == NULL,exit\n");
-        exit(1);
-    }
-
-    // mFormatContext->pb为AVIOContext数据，输入文件的协议，其成员opaque在ffmpeg源码内部使用
-    //if (mFormatContext->pb == NULL) {
-    //    printf("AVIOContext == NULL\n");
-    //    avio_alloc_context(mFormatContext->pb);
-    //}
-
-    //mIOContext = mFormatContext->pb;
-
-    //为AVFrame初始化，不包含像素点占用的空间
-    mFrame = av_frame_alloc();
-    mFrameYUV = av_frame_alloc();
-    if (mFrame == NULL || mFrameYUV == NULL) {
-        printf("mFrame == NULL\n");
-        exit(1);
-    }
-
-    //88字节，不包含帧数据
-    av_init_packet(&mPacket);
-
-    //printf("av_init_packet size is %lu\n",sizeof(mPacket));
-    //av_free_packet(&mPacket);
-
-    //初始化AVFrame的第二种方式
-    //av_new_packet(&mPacket,10);
-    //printf("av_new_packet size is %lu\n",sizeof(mPacket));
-    //av_free_packet(&mPacket);
 
     //打开文件
     //ret = avio_open2(&mIOContext,VIDEO_SOURCE,AVIO_FLAG_READ,NULL,NULL);
@@ -96,9 +59,6 @@ int main() {
         //        printf("codec tag is NULL\n");
         //    }
     }
-#ifdef DUMP_IN
-    mYuvFd = fopen("output.yuv","wb+");
-#endif
     //mIOContext = mFormatContext->opaque;
 
     printf("nb_streams = %u\n",mFormatContext->nb_streams);
@@ -177,7 +137,6 @@ int main() {
                 fwrite(mFrameYUV->data[1],1,y_size/4,mYuvFd);  //U  
                 fwrite(mFrameYUV->data[2],1,y_size/4,mYuvFd);  //V  
 #endif
-
 	    } else if (i == 0) {
 	        printf("There is no frame needed to decode\n");
 	    }
@@ -202,13 +161,65 @@ int main() {
 //                            mCodec->name,mCodec->long_name);
 //}
 
-    //av_frame_free(mFrame);
-    //av_frame_free(mFrameYUV);
+}
+
+void init() {
+#ifdef DUMP_IN
+    mYuvFd = fopen("output.yuv","wb+");
+#endif
+    //注册各种编解码器等
+    av_register_all();
+
+    //为avformat分配空间和部分参数初始化
+    mFormatContext = avformat_alloc_context();
+    if (mFormatContext == NULL) {
+        printf("init AVFormatContext == NULL,exit\n");
+        exit(1);
+    }
+
+    // mFormatContext->pb为AVIOContext数据，输入文件的协议，其成员opaque在ffmpeg源码内部使用
+    //if (mFormatContext->pb == NULL) {
+    //    printf("AVIOContext == NULL\n");
+    //    avio_alloc_context(mFormatContext->pb);
+    //}
+
+    //mIOContext = mFormatContext->pb;
+
+    //为AVFrame初始化，不包含像素点占用的空间
+    mFrame = av_frame_alloc();
+    mFrameYUV = av_frame_alloc();
+    if (mFrame == NULL || mFrameYUV == NULL) {
+        printf("mFrame == NULL\n");
+        exit(1);
+    }
+
+    //88字节，不包含帧数据
+    av_init_packet(&mPacket);
+
+    //printf("av_init_packet size is %lu\n",sizeof(mPacket));
     //av_free_packet(&mPacket);
 
+    //初始化AVFrame的第二种方式
+    //av_new_packet(&mPacket,10);
+    //printf("av_new_packet size is %lu\n",sizeof(mPacket));
+    //av_free_packet(&mPacket);
+
+}
+
+void relese_buffer() {
     avformat_free_context(mFormatContext);
 #ifdef DUMP_IN
     fclose(mYuvFd);
 #endif
+
+}
+
+int main() {
+
+    init();
+
+    decoder_video();
+
+    relese_buffer();
     return 0;
 }
