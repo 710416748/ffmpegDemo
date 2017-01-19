@@ -278,20 +278,26 @@ void encoder_video() {
     int in_width = 720;
     int in_height = 480;
     int y_size = 0;
+
+    // 根据输出文件名初始化一些参数，并选择编码器等
     avformat_alloc_output_context2(&mFmtCtxEncoder,NULL,NULL,OUT_TS);
     mOutputFormat = mFmtCtxEncoder->oformat;
 
+    // 将输出文件的和mURLContext绑定
     ret = avio_open(&mFmtCtxEncoder->pb,OUT_TS,AVIO_FLAG_READ_WRITE);
     if (ret < 0) {
         printf("avio_open fail \n");
         exit(1);
     }
 
+    // 创建视频流
     mViderStream = avformat_new_stream(mFmtCtxEncoder,0);
     if (!mViderStream) {
         printf("mViderStream == NULL\n");
         exit(1);
     }
+
+    // 必要的编码器参数设置
     mCodecCtxEncoder = mViderStream->codec;
     mCodecCtxEncoder->codec_id = mOutputFormat->video_codec;
     mCodecCtxEncoder->codec_type = AVMEDIA_TYPE_VIDEO;
@@ -336,6 +342,7 @@ void encoder_video() {
 
     avpicture_fill((AVPicture *)mFrameEncoder,mPictureBuffer,mCodecCtxEncoder->pix_fmt,mCodecCtxEncoder->width,mCodecCtxEncoder->height);
 
+    // 写入文件头
     avformat_write_header(mFmtCtxEncoder,NULL);
 
     av_new_packet(&mPacketEncoder,mPictureSize);
@@ -346,6 +353,8 @@ void encoder_video() {
     int frame_encoder_num = 0;
 
     for (;;) {
+
+        // 读取YUV数据
         size = fread(mPictureBuffer,1,y_size * 3 / 2,mYuvInFd);
         if (size < y_size * 3 / 2) {
             printf("remain %d byte\ntotal read %d frames\n",size,frame_num);
@@ -368,6 +377,7 @@ void encoder_video() {
 
         int got_pic = 0;
 
+        // 编码
         //printf("before encode\n");
         ret = avcodec_encode_video2(mCodecCtxEncoder,&mPacketEncoder,mFrameEncoder,&got_pic);
         //printf("after encode\n");
@@ -375,6 +385,7 @@ void encoder_video() {
             printf("encode fail\n");
             exit(1);
         }
+
         if (1 == got_pic) {
             frame_encoder_num++;
             mPacketEncoder.stream_index = mViderStream->index;
@@ -382,6 +393,8 @@ void encoder_video() {
             av_free_packet(&mPacketEncoder);
         }
     }
+
+    // 文件尾写入
     av_write_trailer(mFmtCtxEncoder);
 }
 
@@ -396,6 +409,7 @@ void init_pic() {
     mFramePic = av_frame_alloc();
     mFramePicYUV= av_frame_alloc();
 }
+
 void decoder_pic() {
     int ret = -1;
     int y_size = 0;
