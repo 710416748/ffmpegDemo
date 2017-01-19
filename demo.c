@@ -3,23 +3,57 @@
 #define VIDEO_SOURCE "1.mp4"
 #define AUDIO_SOURCE "1.mp3"
 #define PICTURE_SOURCE "1.jpg"
+#define YUV_SOURCE "output.yuv"
+#define OUT_TS "out.mp4"
+#define PIC_OUT "pic.yuv"
+
+
 
 //#define DUMP_IN 1
 
-AVCodec         *mCodec = NULL;            //编解码器
-AVFormatContext *mFormatContext = NULL;    //贯穿ffmpeg的上下文
+//For decoder
+AVCodec         *mCodecDecoder = NULL;     //编解码器
+AVFormatContext *mFmtCtxDecoder = NULL;    //贯穿ffmpeg的上下文
 AVIOContext     *mIOContext = NULL;        //输入设备上下文，ffmpeg将文件也视为一种协议
 AVFrame         *mFrame = NULL;            //解码后的原始帧数据
 AVFrame         *mFrameYUV = NULL;         //原始帧数据转化后的YUV数据
 AVPacket        mPacket;                   //解码前的帧数据
 AVInputFormat   *mInputFormat = NULL;      //输入格式的上下文
 AVCodecContext  *mCodecContext = NULL;     //编解码器的上下文
+AVCodecParameters *mCodecParaEncoder = NULL; //取代AVCodecContext
+
+//For encoder
+AVFormatContext *mFmtCtxEncoder = NULL;
+AVOutputFormat  *mOutputFormat = NULL;     //输出格式
+AVStream        *mViderStream = NULL;
+AVCodecContext  *mCodecCtxEncoder = NULL;
+AVCodec         *mCodecEncoder = NULL;
+AVPacket         mPacketEncoder;
+AVFrame         *mFrameEncoder = NULL;
+uint8_t         *mPictureBuffer = NULL;
+int              mPictureSize = 0;
+
+//For pic
+AVFormatContext *mFmtCtxPic = NULL;
+AVCodec         *mCodecPic = NULL;
+AVCodecContext  *mCodecCtxPic = NULL;
+AVFrame         *mFramePic = NULL;
+AVFrame         *mFramePicYUV = NULL;
+AVPacket         mPacketPIC;
+uint8_t         *mBufferPic = NULL;
+int              mBufferSize = 0;
+
 
 struct SwsContext *img_convert_ctx = NULL; //图像处理的上下文
 
 #ifdef DUMP_IN
-FILE            *mYuvFd;                   //输出文件
+FILE            *mYuvFd = NULL;                   //输出文件
 #endif
+FILE            *mYuvInFd = NULL;
+FILE            *mEncodeOutFd = NULL;
+
+FILE            *mPicInFd = NULL;
+FILE            *mPicOutFd = NULL;
 
 unsigned char   *mBuffer = NULL;           //应该是用于存储像素点
 
@@ -38,19 +72,19 @@ void decoder_video() {
     //ret = avio_open2(&mIOContext,VIDEO_SOURCE,AVIO_FLAG_READ,NULL,NULL);
 
     //打开文件并将AVStream等参数赋值给AVFormatContext
-    ret = avformat_open_input(&mFormatContext,VIDEO_SOURCE,NULL,NULL);
+    ret = avformat_open_input(&mFmtCtxDecoder,VIDEO_SOURCE,NULL,NULL);
     if (ret < 0) {
         printf("open failed\n");
     } else {
         // 获取流的信息赋值给AVFormatContext
-        ret = avformat_find_stream_info(mFormatContext,NULL);
+        ret = avformat_find_stream_info(mFmtCtxDecoder,NULL);
         if (ret < 0 ) {
             printf("find stream info error\n");
-	    exit(1);
-	}
+            exit(1);
+        }
         
 	//获取部分AVInputFormat信息
-        //mInputFormat = mFormatContext->iformat;
+        //mInputFormat = mFmtCtxDecoder->iformat;
         //if (mInputFormat == NULL) {
         //    printf("iformat == NULL\n");
         //} else {
@@ -59,32 +93,32 @@ void decoder_video() {
         //        printf("codec tag is NULL\n");
         //    }
     }
-    //mIOContext = mFormatContext->opaque;
+    //mIOContext = mFmtCtxDecoder->opaque;
 
-    printf("nb_streams = %u\n",mFormatContext->nb_streams);
+    printf("nb_streams = %u\n",mFmtCtxDecoder->nb_streams);
 
-    for (i = 0; i < mFormatContext->nb_streams; i++) {
-        printf("AVStream[%d]:nb_frames = %ld\n",i,(*(mFormatContext->streams + i))->nb_frames);
+    for (i = 0; i < mFmtCtxDecoder->nb_streams; i++) {
+        printf("AVStream[%d]:nb_frames = %ld\n",i,(*(mFmtCtxDecoder->streams + i))->nb_frames);
 
         //判断是否为视频信息
-        if ((mFormatContext->streams)[i]->codec->codec_type == AVMEDIA_TYPE_VIDEO) {
+        if ((mFmtCtxDecoder->streams)[i]->codec->codec_type == AVMEDIA_TYPE_VIDEO) {
             //获取编解码器上下文
-            mCodecContext = mFormatContext->streams[i]->codec;
+            mCodecContext = mFmtCtxDecoder->streams[i]->codec;
 
             video_index = i;
             if (mCodecContext->codec_name) {
                 printf("codec name = %s, codec id = %d\n",mCodecContext->codec_name,mCodecContext->codec_id);
 
-	        //根据编码器id找到decodeer
-                mCodec = avcodec_find_decoder(mCodecContext->codec_id);
-                if(!mCodec) {
-	            printf("Cannot find codec\n");
-	        }
+                //根据编码器id找到decodeer
+                mCodecDecoder = avcodec_find_decoder(mCodecContext->codec_id);
+                if(!mCodecDecoder) {
+                    printf("Cannot find codec\n");
+                }
 
                 //打开解码器
-                if (avcodec_open2(mCodecContext,mCodec,NULL) < 0 ) {
-	            printf("open codec fail\n");
-	        }
+                if (avcodec_open2(mCodecContext,mCodecDecoder,NULL) < 0 ) {
+                    printf("open codec fail\n");
+                }
             }
         }
     }
@@ -100,7 +134,7 @@ void decoder_video() {
 
     //为YUVFrame分配相应空间
     av_image_fill_arrays(mFrameYUV->data, mFrameYUV->linesize,mBuffer,  
-	        AV_PIX_FMT_YUV420P,mCodecContext->width, mCodecContext->height,1);  
+            AV_PIX_FMT_YUV420P,mCodecContext->width, mCodecContext->height,1);  
 
     //Y数据的大小
     y_size = mCodecContext->width * mCodecContext->height;
@@ -115,31 +149,31 @@ void decoder_video() {
     while (ret == 0) {
     
         //读取一帧数据
-        ret = av_read_frame(mFormatContext,&mPacket);
+        ret = av_read_frame(mFmtCtxDecoder,&mPacket);
         if (ret == 0) {
             //printf("data size = %d, pts = %ld, dts = %ld, index = %d\n",mPacket.size,mPacket.pts,mPacket.dts,mPacket.stream_index);
-	    if (mPacket.stream_index != video_index) {
-	        continue;
-	    }
+            if (mPacket.stream_index != video_index) {
+                continue;
+            }
 
             //解码一帧数据，成功返回数据大小
             i = avcodec_decode_video2(mCodecContext,mFrame,&got_frame,&mPacket);
 
-	    if (i > 0) {
-	        printf("mFrame format = %d, got_frame = %d, data size = %d, is I-Frame %s.\n",mFrame->format,got_frame,i,mFrame->format?"true":"false");
+            if (i > 0) {
+                printf("mFrame format = %d, got_frame = %d, data size = %d, is I-Frame %s.\n",mFrame->format,got_frame,i,mFrame->format?"true":"false");
                 
-		//将原始的图像数据转化为YUV数据
+                //将原始的图像数据转化为YUV数据
                 sws_scale(img_convert_ctx, (const unsigned char* const*)mFrame->data, mFrame->linesize, 0, mCodecContext->height,   
                     mFrameYUV->data, mFrameYUV->linesize); 
 #ifdef DUMP_IN
                 //dump
-                fwrite(mFrameYUV->data[0],1,y_size,mYuvFd);    //Y   
-                fwrite(mFrameYUV->data[1],1,y_size/4,mYuvFd);  //U  
-                fwrite(mFrameYUV->data[2],1,y_size/4,mYuvFd);  //V  
+                fwrite(mFrameYUV->data[0],1,y_size,mYuvFd);    //Y
+                fwrite(mFrameYUV->data[1],1,y_size/4,mYuvFd);  //U
+                fwrite(mFrameYUV->data[2],1,y_size/4,mYuvFd);  //V
 #endif
-	    } else if (i == 0) {
-	        printf("There is no frame needed to decode\n");
-	    }
+        } else if (i == 0) {
+                printf("There is no frame needed to decode\n");
+            }
         } else {
             printf("read frame end\n");
         }
@@ -155,10 +189,10 @@ void decoder_video() {
 //}
 
 
-//for (mCodec = av_codec_next(avcodec); mCodec != NULL; mCodec = av_codec_next(avcodec)) {
+//for (mCodecDecoder = av_codec_next(avcodec); mCodecDecoder != NULL; mCodecDecoder = av_codec_next(avcodec)) {
 
 //    printf("first codec short name is %s,\tlong name is %s\n",
-//                            mCodec->name,mCodec->long_name);
+//                            mCodecDecoder->name,mCodecDecoder->long_name);
 //}
 
 }
@@ -171,19 +205,19 @@ void init() {
     av_register_all();
 
     //为avformat分配空间和部分参数初始化
-    mFormatContext = avformat_alloc_context();
-    if (mFormatContext == NULL) {
+    mFmtCtxDecoder = avformat_alloc_context();
+    if (mFmtCtxDecoder == NULL) {
         printf("init AVFormatContext == NULL,exit\n");
         exit(1);
     }
 
-    // mFormatContext->pb为AVIOContext数据，输入文件的协议，其成员opaque在ffmpeg源码内部使用
-    //if (mFormatContext->pb == NULL) {
+    // mFmtCtxDecoder->pb为AVIOContext数据，输入文件的协议，其成员opaque在ffmpeg源码内部使用
+    //if (mFmtCtxDecoder->pb == NULL) {
     //    printf("AVIOContext == NULL\n");
-    //    avio_alloc_context(mFormatContext->pb);
+    //    avio_alloc_context(mFmtCtxDecoder->pb);
     //}
 
-    //mIOContext = mFormatContext->pb;
+    //mIOContext = mFmtCtxDecoder->pb;
 
     //为AVFrame初始化，不包含像素点占用的空间
     mFrame = av_frame_alloc();
@@ -207,19 +241,368 @@ void init() {
 }
 
 void relese_buffer() {
-    avformat_free_context(mFormatContext);
+    if (mFmtCtxDecoder) {
+        avformat_free_context(mFmtCtxDecoder);
+    }
+/*
+    if (mFmtCtxEncoder) {
+        avformat_free_context(mFmtCtxEncoder);
+    }*/
+    if (mViderStream) {
+        if (mViderStream->codec) {
+            avcodec_close(mViderStream->codec);
+        }
+
+        if (mFrameEncoder) {
+            av_free(mFrameEncoder);
+        }
+        if (mPictureBuffer) {
+            av_free(mPictureBuffer);
+        }
+    }
 #ifdef DUMP_IN
     fclose(mYuvFd);
 #endif
+}
 
+void init_encoder() {
+    mYuvInFd = fopen(YUV_SOURCE,"rb");
+    if (!mYuvInFd) {
+        printf("open file fail\n");
+        exit(1);
+    }
+    av_register_all();
+}
+void encoder_video() {
+    int ret = -1;
+    int in_width = 720;
+    int in_height = 480;
+    int y_size = 0;
+    avformat_alloc_output_context2(&mFmtCtxEncoder,NULL,NULL,OUT_TS);
+    mOutputFormat = mFmtCtxEncoder->oformat;
+
+    ret = avio_open(&mFmtCtxEncoder->pb,OUT_TS,AVIO_FLAG_READ_WRITE);
+    if (ret < 0) {
+        printf("avio_open fail \n");
+        exit(1);
+    }
+
+    mViderStream = avformat_new_stream(mFmtCtxEncoder,0);
+    if (!mViderStream) {
+        printf("mViderStream == NULL\n");
+        exit(1);
+    }
+    mCodecCtxEncoder = mViderStream->codec;
+    mCodecCtxEncoder->codec_id = mOutputFormat->video_codec;
+    mCodecCtxEncoder->codec_type = AVMEDIA_TYPE_VIDEO;
+    mCodecCtxEncoder->pix_fmt = AV_PIX_FMT_YUV420P;
+    mCodecCtxEncoder->width = in_width;
+    mCodecCtxEncoder->height = in_height;
+    mCodecCtxEncoder->bit_rate = 400000;
+    mCodecCtxEncoder->gop_size = 250;
+    mCodecCtxEncoder->time_base.num = 1;
+    mCodecCtxEncoder->time_base.den = 25;
+
+    mCodecCtxEncoder->qmin =10;
+    mCodecCtxEncoder->qmax = 51;
+    mCodecCtxEncoder->max_b_frames = 3;
+
+    AVDictionary *param = 0;
+
+    printf("mCodecCtxEncoder codec id = %d\n",mCodecCtxEncoder->codec_id);
+    av_dump_format(mFmtCtxEncoder, 0, OUT_TS, 1);
+
+    mCodecEncoder = avcodec_find_encoder(mCodecCtxEncoder->codec_id);
+
+    if (!mCodecEncoder) {
+        printf("cannot find encoder\n");
+        exit(1);
+    }
+
+    ret = avcodec_open2(mCodecCtxEncoder,mCodecEncoder, NULL);
+    if (ret < 0) {
+        printf("cannot open encoder\n");
+        exit(1);
+    }
+
+    mFrameEncoder = av_frame_alloc();
+    if (!mFrameEncoder) {
+        printf("mFrameEncoder == NULL\n");
+        exit(1);
+    }
+
+    mPictureSize = avpicture_get_size(mCodecCtxEncoder->pix_fmt,mCodecCtxEncoder->width,mCodecCtxEncoder->height);
+    mPictureBuffer = (uint8_t *)av_malloc(mPictureSize);
+
+    avpicture_fill((AVPicture *)mFrameEncoder,mPictureBuffer,mCodecCtxEncoder->pix_fmt,mCodecCtxEncoder->width,mCodecCtxEncoder->height);
+
+    avformat_write_header(mFmtCtxEncoder,NULL);
+
+    av_new_packet(&mPacketEncoder,mPictureSize);
+
+    y_size = mCodecCtxEncoder->width * mCodecCtxEncoder->height;
+    int size = 0;
+    int frame_num = 0;
+    int frame_encoder_num = 0;
+
+    for (;;) {
+        size = fread(mPictureBuffer,1,y_size * 3 / 2,mYuvInFd);
+        if (size < y_size * 3 / 2) {
+            printf("remain %d byte\ntotal read %d frames\n",size,frame_num);
+            break;
+        } else if(feof(mYuvInFd)) {
+            printf("total read %d frames\n",frame_num);
+            break;
+        }else {
+            frame_num++;
+        }
+        mFrameEncoder->data[0] = mPictureBuffer;
+        mFrameEncoder->data[1] = mPictureBuffer + y_size;
+        mFrameEncoder->data[2] = mPictureBuffer + y_size * 5 / 4;
+
+        mFrameEncoder->format = 0;
+        mFrameEncoder->width = in_width;
+        mFrameEncoder->height = in_height;
+
+        mFrameEncoder->pts = frame_num * mViderStream->time_base.den / ((mViderStream->time_base.num) * 25);
+
+        int got_pic = 0;
+
+        //printf("before encode\n");
+        ret = avcodec_encode_video2(mCodecCtxEncoder,&mPacketEncoder,mFrameEncoder,&got_pic);
+        //printf("after encode\n");
+        if (ret < 0 ) {
+            printf("encode fail\n");
+            exit(1);
+        }
+        if (1 == got_pic) {
+            frame_encoder_num++;
+            mPacketEncoder.stream_index = mViderStream->index;
+            av_write_frame(mFmtCtxEncoder,&mPacketEncoder);
+            av_free_packet(&mPacketEncoder);
+        }
+    }
+    av_write_trailer(mFmtCtxEncoder);
+}
+
+void init_pic() {
+    av_register_all();
+
+    mPicOutFd = fopen(PIC_OUT,"wb+");
+    if (!mPicOutFd) {
+        printf("open fail \n");
+        exit(1);
+    }
+    mFramePic = av_frame_alloc();
+    mFramePicYUV= av_frame_alloc();
+}
+void decoder_pic() {
+    int ret = -1;
+    int y_size = 0;
+    int got_frame = 0;
+    int pic_size = 0;
+    int count = 0;
+
+    ret = avformat_open_input(&mFmtCtxPic,PICTURE_SOURCE,NULL,NULL);
+
+    if (ret < 0) {
+        printf("open input fail\n");
+        exit(1);
+    }
+        ret = avformat_find_stream_info(mFmtCtxPic,NULL);
+    if (ret < 0 ) {
+        printf("find stream info error\n");
+        exit(1);
+    }
+    printf("nb_streams = %u,codec type = %d\n",mFmtCtxPic->nb_streams,(mFmtCtxPic->streams)[0]->codec->codec_type);
+    mCodecCtxPic = (mFmtCtxPic->streams)[0]->codec;
+
+    if (!mCodecCtxPic) {
+        printf("mCodecCtxPic is NULL\n");
+        exit(1);
+    }
+
+    mCodecPic = avcodec_find_decoder((mFmtCtxPic->streams)[0]->codec->codec_id);
+    if (!mCodecPic) {
+        printf("can not find decoder\n");
+        exit(1);
+    }
+
+    ret = avcodec_open2(mCodecCtxPic,mCodecPic,NULL);
+
+    if (ret < 0) {
+        printf("open encoder fail\n");
+        exit(1);
+    }
+    printf("picture codec id = %d,type= %d\n",mCodecCtxPic->codec_id,mCodecCtxPic->codec_type);
+
+    mBufferPic = (unsigned char *)av_malloc(av_image_get_buffer_size(AV_PIX_FMT_YUV420P,
+                                    mCodecCtxPic->width, mCodecCtxPic->height,1));
+
+    av_image_fill_arrays(mFramePicYUV->data, mFramePicYUV->linesize,mBufferPic,
+        AV_PIX_FMT_YUV420P,mCodecCtxPic->width, mCodecCtxPic->height,1);
+
+    y_size = mCodecCtxPic->width * mCodecCtxPic->height;
+    printf("width = %d,height = %d\n",mCodecCtxPic->width,mCodecCtxPic->height);
+
+    img_convert_ctx = sws_getContext(mCodecCtxPic->width, mCodecCtxPic->height, mCodecCtxPic->pix_fmt,
+        mCodecCtxPic->width, mCodecCtxPic->height, AV_PIX_FMT_YUV420P, SWS_BICUBIC, NULL, NULL, NULL);
+
+    pic_size = avpicture_get_size(mCodecCtxPic->pix_fmt,mCodecCtxPic->width,mCodecCtxPic->height);
+   // av_new_packet(&mPacketPIC,pic_size);
+
+    ret = av_read_frame(mFmtCtxPic,&mPacketPIC);
+
+
+    if (ret != 0) {
+        printf("read frame fail\n");
+        exit(1);
+    }
+
+
+     ret = avcodec_decode_video2(mCodecCtxPic,mFramePic,&got_frame,&mPacketPIC);
+
+     if (ret > 0) {
+        printf("ret = %d,got_frame = %d\n",ret,got_frame);
+        sws_scale(img_convert_ctx, (const unsigned char* const*)mFramePic->data, mFramePic->linesize, 0,
+                        mCodecCtxPic->height,mFramePicYUV->data, mFramePicYUV->linesize);
+
+        fwrite(mFramePicYUV->data[0],1,y_size,mPicOutFd);    //Y
+        fwrite(mFramePicYUV->data[1],1,y_size/4,mPicOutFd);  //U
+        fwrite(mFramePicYUV->data[2],1,y_size/4,mPicOutFd);  //V
+    } else if (ret == 0) {
+        printf("read zero frame\n");
+    } else {
+        printf("ret = %d,got_frame = %d\n",ret,got_frame);
+        printf("decode frame fail\n");
+        exit(1);
+    }
+
+}
+
+void pic_to_video() {
+
+    int ret = -1;
+    int in_width = mCodecCtxPic->width;
+    int in_height = mCodecCtxPic->height;
+    int y_size = in_width * in_height;
+    avformat_alloc_output_context2(&mFmtCtxEncoder,NULL,NULL,OUT_TS);
+    mOutputFormat = mFmtCtxEncoder->oformat;
+
+    ret = avio_open(&mFmtCtxEncoder->pb,OUT_TS,AVIO_FLAG_READ_WRITE);
+    if (ret < 0) {
+        printf("avio_open fail \n");
+        exit(1);
+    }
+
+    mViderStream = avformat_new_stream(mFmtCtxEncoder,0);
+    if (!mViderStream) {
+        printf("mViderStream == NULL\n");
+        exit(1);
+    }
+    mCodecCtxEncoder = mViderStream->codec;
+    mCodecCtxEncoder->codec_id = mOutputFormat->video_codec;
+    mCodecCtxEncoder->codec_type = AVMEDIA_TYPE_VIDEO;
+    mCodecCtxEncoder->pix_fmt = AV_PIX_FMT_YUV420P;
+    mCodecCtxEncoder->width = in_width;
+    mCodecCtxEncoder->height = in_height;
+    mCodecCtxEncoder->bit_rate = 400000;
+    mCodecCtxEncoder->gop_size = 250;
+    mCodecCtxEncoder->time_base.num = 1;
+    mCodecCtxEncoder->time_base.den = 25;
+
+    mCodecCtxEncoder->qmin =10;
+    mCodecCtxEncoder->qmax = 51;
+    mCodecCtxEncoder->max_b_frames = 3;
+
+    AVDictionary *param = 0;
+
+    printf("mCodecCtxEncoder codec id = %d\n",mCodecCtxEncoder->codec_id);
+    av_dump_format(mFmtCtxEncoder, 0, OUT_TS, 1);
+
+    mCodecEncoder = avcodec_find_encoder(mCodecCtxEncoder->codec_id);
+
+    if (!mCodecEncoder) {
+        printf("cannot find encoder\n");
+        exit(1);
+    }
+
+    ret = avcodec_open2(mCodecCtxEncoder,mCodecEncoder, NULL);
+    if (ret < 0) {
+        printf("cannot open encoder\n");
+        exit(1);
+    }
+
+    mFrameEncoder = av_frame_alloc();
+    if (!mFrameEncoder) {
+        printf("mFrameEncoder == NULL\n");
+        exit(1);
+    }
+
+    mPictureSize = avpicture_get_size(mCodecCtxEncoder->pix_fmt,mCodecCtxEncoder->width,mCodecCtxEncoder->height);
+    mPictureBuffer = (uint8_t *)av_malloc(mPictureSize);
+
+    avpicture_fill((AVPicture *)mFrameEncoder,mPictureBuffer,mCodecCtxEncoder->pix_fmt,mCodecCtxEncoder->width,mCodecCtxEncoder->height);
+
+    avformat_write_header(mFmtCtxEncoder,NULL);
+
+    av_new_packet(&mPacketEncoder,mPictureSize);
+
+    y_size = mCodecCtxEncoder->width * mCodecCtxEncoder->height;
+    int size = 0;
+    int frame_num = 0;
+    int frame_encoder_num = 0;
+    int frames = 0;
+
+    for (frames = 0; frames < 100; frames++) {
+
+        //printf("do one encoder\n");
+        mFrameEncoder->data[0] = mFramePicYUV->data[0];
+        mFrameEncoder->data[1] = mFramePicYUV->data[1];
+        mFrameEncoder->data[2] = mFramePicYUV->data[2];
+
+        mFrameEncoder->format = 0;
+        mFrameEncoder->width = in_width;
+        mFrameEncoder->height = in_height;
+
+        mFrameEncoder->pts = frames * mViderStream->time_base.den / ((mViderStream->time_base.num) * 25);
+
+        int got_pic = 0;
+
+        //printf("before encode\n");
+        ret = avcodec_encode_video2(mCodecCtxEncoder,&mPacketEncoder,mFrameEncoder,&got_pic);
+        //printf("after encode\n");
+        if (ret < 0 ) {
+            printf("encode fail\n");
+            exit(1);
+        }
+        if (1 == got_pic) {
+            frame_encoder_num++;
+            mPacketEncoder.stream_index = mViderStream->index;
+            av_write_frame(mFmtCtxEncoder,&mPacketEncoder);
+            av_free_packet(&mPacketEncoder);
+        }
+    }
+    printf("total encode %d frames\n",frame_encoder_num);
+    av_write_trailer(mFmtCtxEncoder);
 }
 
 int main() {
 
-    init();
+    //init();
+    //decoder_video();
 
-    decoder_video();
+
+    //init_encoder();
+    //encoder_video();
+
+    init_pic();
+    decoder_pic();
+
+    pic_to_video();
 
     relese_buffer();
+
+
     return 0;
 }
