@@ -7,9 +7,11 @@
 #define OUT_TS "out.mp4"
 #define PIC_OUT "pic.yuv"
 
-
+#define true 1
+#define false 0
 
 //#define DUMP_IN 1
+#define MAX_AUDIO_FRAME_SIZE 192000 // 1 second of 48khz 32-bit audio
 
 //For decoder
 AVCodec         *mCodecDecoder = NULL;     //编解码器
@@ -43,6 +45,13 @@ AVPacket         mPacketPIC;
 uint8_t         *mBufferPic = NULL;
 int              mBufferSize = 0;
 
+//For audio
+AVFormatContext *mFmtCtxAudio = NULL;
+AVCodec             *mCodecAudio = NULL;
+AVCodecContext  *mCodecCtxAudio = NULL;
+AVFrame             *mFrameAudio = NULL;
+AVPacket              mPacketAudio;
+
 
 struct SwsContext *img_convert_ctx = NULL; //图像处理的上下文
 
@@ -54,6 +63,9 @@ FILE            *mEncodeOutFd = NULL;
 
 FILE            *mPicInFd = NULL;
 FILE            *mPicOutFd = NULL;
+
+FILE            *mAudioPCM = NULL;
+//FILE            *mAduioIn = NULL;
 
 unsigned char   *mBuffer = NULL;           //应该是用于存储像素点
 
@@ -601,6 +613,136 @@ void pic_to_video() {
     av_write_trailer(mFmtCtxEncoder);
 }
 
+void init_aud() {
+    av_register_all();
+
+    mAudioPCM = fopen("outAudio.pcm","wb+");
+
+    if (!mAudioPCM) {
+        printf("open file failed");
+    }
+}
+
+void decoder_audio() {
+    int i = 0;
+    int ret = -1;
+    int audio_index = -1;
+
+    if ( avformat_open_input(&mFmtCtxAudio,AUDIO_SOURCE,NULL,NULL) < 0) {
+        printf("open audio source failed\n");
+    }
+
+    if (avformat_find_stream_info(mFmtCtxAudio,NULL) < 0) {
+        printf("find stream info failed\n");
+    }
+
+    for (i = 0; i < mFmtCtxAudio->nb_streams; i++) {
+        if (mFmtCtxAudio->streams[i]->codec->codec_type == AVMEDIA_TYPE_AUDIO) {
+            audio_index = i;
+            printf("audio index is %d\n",i);
+            break;
+        }
+    }
+
+    if (audio_index == -1) {
+        printf("cannot find audio stream \n");
+        exit(1);
+    }
+
+    mCodecCtxAudio = mFmtCtxAudio->streams[audio_index]->codec;
+
+    mCodecAudio = avcodec_find_decoder(mCodecCtxAudio->codec_id);
+
+    if (mCodecAudio != NULL) {
+        printf("audio codec id is %d, name is %s\n",mCodecAudio->id,mCodecAudio->name);
+    } else {
+        printf("cannot find audio codec\n");
+    }
+
+    if (avcodec_open2(mCodecCtxAudio,mCodecAudio,NULL) < 0) {
+        printf("cannot bind mCodecAudio to mCodecCtxAudio\n");
+    }
+
+    printf("bit rate is %ld \n",mCodecCtxAudio->bit_rate);
+    printf("saple rate = %d\n",mCodecCtxAudio->sample_rate);
+    printf("channels = %d\n",mCodecCtxAudio->channels);
+    printf("block_align is %d \n",mCodecCtxAudio->block_align);
+
+    uint8_t *audio_pkt_data = NULL;
+    int audio_pkt_size = 0;
+    int output_size = MAX_AUDIO_FRAME_SIZE * 100;
+    uint8_t *audio_buf = NULL;
+    int got_frame = -1;
+    int packet_num = 0;
+
+    SwrContext *swr_ctx = NULL;
+    //enum AVSampleFormat dst_format = AV_SAMPLE_FMT_S16;
+
+    mFrameAudio = av_frame_alloc();
+    audio_buf = (uint8_t *) malloc (sizeof(MAX_AUDIO_FRAME_SIZE * 3 / 2));
+
+    while (true) {
+        ret = av_read_frame(mFmtCtxAudio,&mPacketAudio);
+
+        if (ret == AVERROR_EOF) {
+            printf("read end \n");
+            break;
+        } else if (ret < 0) {
+            printf("read frame end\n");
+        }
+        packet_num++;
+        if (mPacketAudio.stream_index == audio_index) {
+
+                ret = avcodec_send_packet(mCodecCtxAudio, &mPacketAudio);
+                if (ret < 0 ) {
+                    printf("send packet error\n");
+                    exit(1);
+                }
+
+                ret = avcodec_receive_frame(mCodecCtxAudio, mFrameAudio);
+                if (ret < 0 ) {
+                    printf("receive packet error,ret = %d\n",ret);
+                }
+                //printf("decodec one packet\n");
+                //fwrite(mFrameAudio->data,1,mFrameAudio->side_data,mAudioPCM);
+#if 0
+                if (mFrameAudio->channels > 0 && mFrameAudio->channel_layout == 0) {
+                    mFrameAudio->channel_layout = av_get_default_channel_layout(mFrameAudio->channels);
+                } else if (mFrameAudio->channels == 0 && mFrameAudio->channel_layout > 0) {
+                    mFrameAudio->channels = av_get_channel_layout_nb_channels(mFrameAudio->channel_layout);
+                }
+                //dst_format = AV_SAMPLE_FMT_S16;//av_get_packed_sample_fmt((AVSampleFormat)frame->format);
+                uint64_t dst_layout = av_get_default_channel_layout(mFrameAudio->channels);
+
+                swr_ctx = swr_alloc_set_opts(NULL, dst_layout, AV_SAMPLE_FMT_S16, mFrameAudio->sample_rate,
+                    mFrameAudio->channel_layout, mFrameAudio->format, mFrameAudio->sample_rate, 0, NULL);
+
+                if (!swr_ctx || swr_init(swr_ctx) < 0) {
+                    exit(1);
+                }
+
+                int dst_nb_samples = av_rescale_rnd(swr_get_delay(swr_ctx, mFrameAudio->sample_rate) + mFrameAudio->nb_samples,
+                                                                                    mFrameAudio->sample_rate, mFrameAudio->sample_rate, AVRounding(1));
+                int nb = swr_convert(swr_ctx, &audio_buf, dst_nb_samples, (const uint8_t**)mFrameAudio->data, mFrameAudio->nb_samples);
+                int data_size = mFrameAudio->channels * nb * av_get_bytes_per_sample(AV_SAMPLE_FMT_S16);
+#endif
+                printf("mFrameAudio linesize = %d, format = %d\n",mFrameAudio->linesize[0],mFrameAudio->format);
+                int data_size = mFrameAudio->channels * mFrameAudio->nb_samples * av_get_bytes_per_sample(mFrameAudio->format);
+                printf("data size = %d\n",data_size);
+                if (mFrameAudio->format >= 0) {
+                    fwrite(mFrameAudio->data,1,data_size,mAudioPCM);
+                }
+                if (*(mFrameAudio->data) == NULL) {
+                    printf("data is NULL\n");
+                }
+            }
+
+        av_free_packet(&mPacketAudio);
+
+    }
+            printf("total has %d packet\n",packet_num);
+}
+
 int main() {
 
     //init();
@@ -610,13 +752,15 @@ int main() {
     //init_encoder();
     //encoder_video();
 
-    init_pic();
-    decoder_pic();
+    //init_pic();
+    //decoder_pic();
 
-    pic_to_video();
+    //pic_to_video();
+
+    init_aud();
+    decoder_audio();
 
     relese_buffer();
-
 
     return 0;
 }
