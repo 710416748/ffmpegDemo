@@ -1,11 +1,12 @@
 #include "include/main.h"
 
-#define VIDEO_SOURCE "1.mp4"
-#define AUDIO_SOURCE "1.mp3"
-#define PICTURE_SOURCE "1.jpg"
-#define YUV_SOURCE "output.yuv"
-#define OUT_TS "out.mp4"
-#define PIC_OUT "pic.yuv"
+#define VIDEO_SOURCE "../1.mp4"
+#define AUDIO_SOURCE "../1.mp3"
+#define PICTURE_SOURCE "../1.jpg"
+#define YUV_SOURCE "../output.yuv"
+#define OUT_TS "../out.mp4"
+#define PIC_OUT "../pic.yuv"
+#define PCM_OUT "../outAudio.pcm"
 
 #define true 1
 #define false 0
@@ -616,7 +617,7 @@ void pic_to_video() {
 void init_aud() {
     av_register_all();
 
-    mAudioPCM = fopen("outAudio.pcm","wb+");
+    mAudioPCM = fopen(PCM_OUT,"wb+");
 
     if (!mAudioPCM) {
         printf("open file failed");
