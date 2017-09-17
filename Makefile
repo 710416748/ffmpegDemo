@@ -1,4 +1,4 @@
-cc += gcc
+cc += gcc -g
 LIBS += -L/usr/local/lib -lavcodec  -lavdevice  -lavfilter  -lavformat \
         -lavutil  -lswresample  -lswscale -lpthread
 
