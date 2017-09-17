@@ -7,6 +7,7 @@
 #define OUT_TS "../out.mp4"
 #define PIC_OUT "../pic.yuv"
 #define PCM_OUT "../outAudio.pcm"
+#define MP3_OUT "../out.mp3"
 
 #define true 1
 #define false 0
@@ -48,11 +49,19 @@ int              mBufferSize = 0;
 
 //For audio
 AVFormatContext *mFmtCtxAudio = NULL;
-AVCodec             *mCodecAudio = NULL;
+AVCodec         *mCodecAudio = NULL;
 AVCodecContext  *mCodecCtxAudio = NULL;
-AVFrame             *mFrameAudio = NULL;
-AVPacket              mPacketAudio;
+AVFrame         *mFrameAudio = NULL;
+AVPacket        mPacketAudio;
 
+//for audio encode
+AVFormatContext *mFmtCtxAudioEn = NULL;
+AVOutputFormat  *mOutFmtAndioEN = NULL;
+AVCodec         *mCodecAudioEn = NULL;
+AVCodecContext  *mCodecCtxAudioEn = NULL;
+AVFrame         *mFrameAudioEn = NULL;
+AVStream        *mAudioStreamEn = NULL;
+AVPacket        mPacketAudioEn;
 
 struct SwsContext *img_convert_ctx = NULL; //图像处理的上下文
 
@@ -66,7 +75,9 @@ FILE            *mPicInFd = NULL;
 FILE            *mPicOutFd = NULL;
 
 FILE            *mAudioPCM = NULL;
-//FILE            *mAduioIn = NULL;
+FILE            *mAudioIn = NULL;
+FILE            *mAudioOut = NULL;
+
 
 unsigned char   *mBuffer = NULL;           //应该是用于存储像素点
 
@@ -622,6 +633,7 @@ void init_aud() {
     if (!mAudioPCM) {
         printf("open file failed");
     }
+
 }
 
 void decoder_audio() {
@@ -744,8 +756,157 @@ void decoder_audio() {
             printf("total has %d packet\n",packet_num);
 }
 
-int main() {
+void init_audio_en() {
+    ALOGI("init\n");
+    av_log_set_level(AV_LOG_DEBUG);
+    av_register_all();
 
+    mAudioOut = fopen(MP3_OUT,"wb+");
+
+    if (!mAudioOut) {
+        ALOGE("open %s failed",MP3_OUT);
+    }
+
+    mAudioIn = fopen(PCM_OUT,"rb+");
+
+    if (!mAudioIn) {
+        ALOGE("open %s failed",PCM_OUT);
+    }
+}
+
+void encoder_audio() {
+    uint8_t *frame_buf = NULL;
+    int got_frame = 0;
+    int ret = 0;
+    int size = 0;
+    int frame_num = 100;
+
+
+    // 获取AVFormatContext以及outputformat的两种方法
+    // 方法一：
+    // avformat_alloc_output_context2(&mFmtCtxAudioEn,NULL,NULL,MP3_OUT);
+    // mOutFmtAndioEN = mFmtCtxAudioEn->oformat;
+
+    // 方法二：
+    mFmtCtxAudioEn = avformat_alloc_context();
+    mOutFmtAndioEN = av_guess_format(NULL,MP3_OUT,NULL);
+    mFmtCtxAudioEn->oformat = mOutFmtAndioEN;
+    ALOGI("get outputformat\n");
+
+    // 打开输出文件
+    if (avio_open(&mFmtCtxAudioEn->pb,MP3_OUT,AVIO_FLAG_READ_WRITE) < 0) {
+        ALOGE("avio_open failed\n");
+        return;
+    }
+
+    // 创建音频流
+    mAudioStreamEn = avformat_new_stream(mFmtCtxAudioEn,0);
+    if (!mAudioStreamEn) {
+        ALOGE("create stream failed\n");
+    }
+
+    // 配置音频数据
+    mCodecCtxAudioEn = mAudioStreamEn->codec;
+    mCodecCtxAudioEn->codec_id = mOutFmtAndioEN->audio_codec;
+    mCodecCtxAudioEn->codec_type = AVMEDIA_TYPE_AUDIO;
+    mCodecCtxAudioEn->sample_fmt = AV_SAMPLE_FMT_S16P;
+    mCodecCtxAudioEn->sample_rate = 44100;
+    mCodecCtxAudioEn->channel_layout = AV_CH_LAYOUT_STEREO;
+    mCodecCtxAudioEn->channels = av_get_channel_layout_nb_channels(mCodecCtxAudioEn->channel_layout);
+    mCodecCtxAudioEn->bit_rate = 320000;
+
+    ALOGI("mCodecCtxAudioEn = %p, codec_id= %d,  codec_type = %d, sample_fmt = %d,channels = %d\n",
+            mCodecCtxAudioEn,mCodecCtxAudioEn->codec_id, mCodecCtxAudioEn->codec_type,AV_SAMPLE_FMT_S16P,mCodecCtxAudioEn->channels);
+
+    av_dump_format(avformat_alloc_output_context2,0,MP3_OUT,1);
+
+
+    // 匹配codec，mp3 encoder需要三方库支持
+    mCodecAudioEn = avcodec_find_encoder(mCodecCtxAudioEn->codec_id);
+
+    if (!mCodecAudioEn) {
+        ALOGE("find encoder failed,codec id = %d\n",mCodecCtxAudioEn->codec_id);
+    }
+
+    if (avcodec_open2(mCodecCtxAudioEn,mCodecAudioEn,NULL) < 0) {
+        ALOGE("open encoder failed\n");
+    }
+
+    // 为frame 以及 packet分配相应的内存以及初始化
+    mFrameAudioEn = av_frame_alloc();
+    mFrameAudioEn->nb_samples = mCodecCtxAudioEn->frame_size;
+    mFrameAudioEn->format = mCodecCtxAudioEn->sample_fmt;
+
+    size = av_samples_get_buffer_size(NULL,mCodecCtxAudioEn->channels,mCodecCtxAudioEn->frame_size,mCodecCtxAudioEn->sample_fmt,1);
+    frame_buf = (uint8_t *)av_malloc(size);
+    avcodec_fill_audio_frame(mFrameAudioEn,mCodecCtxAudioEn->channels,mCodecCtxAudioEn->sample_fmt,(const uint8_t*)frame_buf,size,1);
+
+    ALOGI("avcodec_fill_audio_frame done,size = %d \n", size);
+    avformat_write_header(mFmtCtxAudioEn,NULL);
+
+    ALOGI("avformat_write_header done\n");
+    av_new_packet(&mPacketAudioEn,size);
+
+
+    // 开始编码
+    for (int i = 1; ; i++) {
+        ALOGI("i = %d\n",i);
+        if (fread(frame_buf,1,size,mAudioIn) < 0) {
+            ALOGE("read audio  failed\n");
+            break;
+        } else if (feof(mAudioIn)) {
+            ALOGI("read all audio \n");
+            break;
+        }
+
+        mFrameAudioEn->data[0] = frame_buf;
+        mFrameAudioEn->pts = 100 * i;
+
+        got_frame = 0;
+
+        ret = avcodec_encode_audio2(mCodecCtxAudioEn,&mPacketAudioEn,mFrameAudioEn,&got_frame);
+
+        if (ret < 0 ) {
+            ALOGE("encode failed\n");
+            return -1;
+        }
+
+        if (got_frame == 1) {
+            ALOGI("got 1 audio frame\n");
+            mPacketAudioEn.stream_index = mAudioStreamEn->index;
+            ret = av_write_frame(mFmtCtxAudioEn,&mPacketAudioEn);
+            av_free_packet(&mPacketAudioEn);
+        }
+    }
+
+    // 写入输出文件结尾部分，ts格式不需要该操作
+    av_write_trailer(mFmtCtxAudioEn);
+
+
+    if (mAudioStreamEn) {
+        avcodec_close(mAudioStreamEn->codec);
+        av_free(frame_buf);
+        av_free(mFrameAudioEn);
+    }
+
+    // 释放相应资源
+    avio_close(mFmtCtxAudioEn->opaque);
+    avformat_free_context(mFmtCtxAudioEn);
+
+    fclose(mAudioOut);
+    fclose(mAudioIn);
+}
+
+void my_logoutput(void* ptr, int level, const char* fmt,va_list vl) {
+    FILE *fp = fopen("my_log.txt","a+");
+    if (fp) {
+        vfprintf(fp,fmt,vl);
+        fflush(fp);
+        fclose(fp);
+    }
+}
+
+int main() {
     //init();
     //decoder_video();
 
@@ -758,8 +919,11 @@ int main() {
 
     //pic_to_video();
 
-    init_aud();
-    decoder_audio();
+    //init_aud();
+    //decoder_audio();
+
+    init_audio_en();
+    encoder_audio();
 
     relese_buffer();
 
